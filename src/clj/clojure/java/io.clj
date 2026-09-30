@@ -19,7 +19,10 @@
               StringReader ByteArrayInputStream
               BufferedInputStream BufferedOutputStream
               CharArrayReader Closeable)
+     (clojure.lang RT)
      (java.net URI URL MalformedURLException Socket URLDecoder URLEncoder)))
+
+(set! *warn-on-reflection* true)
 
 (def
     ^{:doc "Type object for a Java primitive byte array."
@@ -48,11 +51,11 @@
   
   String
   (as-file [s] (File. s))
-  (as-url [s] (URL. s))  
+  (as-url [s] (RT/toUrl s))
   
   File
   (as-file [f] f)
-  (as-url [f] (.toURL (.toURI f)))
+  (as-url [f] (RT/toUrl f))
 
   URL
   (as-url [u] u)
@@ -253,12 +256,12 @@
   (assoc default-streams-impl
     :make-input-stream (fn [^String x opts]
                          (try
-                          (make-input-stream (URL. x) opts)
+                          (make-input-stream (RT/toUrl x) opts)
                           (catch MalformedURLException e
                             (make-input-stream (File. x) opts))))
     :make-output-stream (fn [^String x opts]
                           (try
-                           (make-output-stream (URL. x) opts)
+                           (make-output-stream (RT/toUrl x) opts)
                            (catch MalformedURLException err
                              (make-output-stream (File. x) opts))))))
 
@@ -385,7 +388,7 @@
 (defmethod do-copy [byte-array-type Writer] [^"[B" input ^Writer output opts]
   (do-copy (ByteArrayInputStream. input) output opts))
 
-(defmethod do-copy [byte-array-type File] [^"[B" input ^Writer output opts]
+(defmethod do-copy [byte-array-type File] [^"[B" input ^File output opts]
   (do-copy (ByteArrayInputStream. input) output opts))
 
 (defn copy

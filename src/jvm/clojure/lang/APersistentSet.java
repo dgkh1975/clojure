@@ -18,6 +18,9 @@ import java.util.Iterator;
 import java.util.Set;
 
 public abstract class APersistentSet extends AFn implements IPersistentSet, Collection, Set, Serializable, IHashEq {
+
+private static final long serialVersionUID = 889908853183699706L;
+
 int _hash;
 int _hasheq;
 final IPersistentMap impl;
@@ -47,7 +50,19 @@ public ISeq seq(){
 }
 
 public Object invoke(Object arg1) {
-	return get(arg1);
+	return impl.valAt(arg1);
+}
+
+public Object invoke(Object arg1, Object arg2) {
+    return impl.valAt(arg1, arg2);
+}
+
+public Object valAt(Object key) {
+    return impl.valAt(key);
+}
+
+public Object valAt(Object key, Object notFound) {
+    return impl.valAt(key, notFound);
 }
 
 public boolean equals(Object obj){

@@ -56,6 +56,11 @@
                                      (not (Modifier/isStatic mods))))))]
     (filter-methods c not-exposable?)))
 
+(defn- instance-methods [^Class c]
+  (remove (fn [^java.lang.reflect.Method meth]
+            (Modifier/isStatic (.getModifiers meth)))
+          (.getMethods c)))
+
 (defn- ctor-sigs [^Class super]
   (for [^Constructor ctor (. super (getDeclaredConstructors))
         :when (not (. Modifier (isPrivate (. ctor (getModifiers)))))]
@@ -101,15 +106,26 @@
       'char Character/TYPE
       'chars (Class/forName "[C")})
 
-(defn- ^Class the-class [x] 
-  (cond 
-   (class? x) x
-   (contains? prim->class x) (prim->class x)
-   :else (let [strx (str x)]
-           (clojure.lang.RT/classForName 
-            (if (some #{\. \[} strx)
-              strx
-              (str "java.lang." strx))))))
+(defn- the-array-class [sym]
+  (clojure.lang.RT/classForName
+   (let [cn (namespace sym)]
+     (clojure.lang.Compiler$HostExpr/buildArrayClassDescriptor
+      (if (or (clojure.lang.Compiler/primClass (symbol cn)) (some #{\.} cn))
+        sym
+        (symbol (str "java.lang." cn) (name sym)))))))
+
+(defn- ^Class the-class [x]
+  (cond
+    (class? x) x
+    (symbol? x) (cond (contains? prim->class x) (prim->class x)
+                      (clojure.lang.Compiler$HostExpr/looksLikeArrayClass x)
+                        (the-array-class x)
+                      :else (let [strx (str x)]
+                              (clojure.lang.RT/classForName
+                               (if (some #{\. \[} strx)
+                                 strx
+                                 (str "java.lang." strx)))))
+    :else (clojure.lang.RT/classForName x)))
 
 ;; someday this can be made codepoint aware
 (defn- valid-java-method-name
@@ -190,6 +206,14 @@
                            (. gen (throwException ex-type (str (. m (getName)) " ("
                                                                impl-pkg-name "/" prefix (.getName m)
                                                                " not defined?)"))))
+        emit-super-call (fn [^Class target-class ^GeneratorAdapter gen ^Method m]
+                          (. gen (loadThis))
+                          (. gen (loadArgs))
+                          (. gen (visitMethodInsn (. Opcodes INVOKESPECIAL)
+                                                  (iname target-class)
+                                                  (. m (getName))
+                                                  (. m (getDescriptor))
+                                                  (.isInterface target-class))))
         emit-forwarding-method
         (fn [name pclasses rclass as-static else-gen]
           (let [mname (str name)
@@ -254,7 +278,7 @@
             (. gen (endMethod))))
         ]
                                         ;start class definition
-    (. cv (visit (. Opcodes V1_8) (+ (. Opcodes ACC_PUBLIC) (. Opcodes ACC_SUPER))
+    (. cv (visit Compiler/JVM_BYTECODE_VERSION (+ (. Opcodes ACC_PUBLIC) (. Opcodes ACC_SUPER))
                  cname nil (iname super)
                  (when-let [ifc (seq interfaces)]
                    (into-array (map iname ifc)))))
@@ -403,24 +427,18 @@
     (let [mm (non-private-methods super)]
       (doseq [^java.lang.reflect.Method meth (vals mm)]
              (emit-forwarding-method (.getName meth) (.getParameterTypes meth) (.getReturnType meth) false
-                                     (fn [^GeneratorAdapter gen ^Method m]
-                                       (. gen (loadThis))
-                                        ;push args
-                                       (. gen (loadArgs))
-                                        ;call super
-                                       (. gen (visitMethodInsn (. Opcodes INVOKESPECIAL) 
-                                                               (. super-type (getInternalName))
-                                                               (. m (getName))
-                                                               (. m (getDescriptor)))))))
+                                     (partial emit-super-call super)))
                                         ;add methods matching interfaces', if no fn -> throw
       (reduce1 (fn [mm ^java.lang.reflect.Method meth]
                 (if (contains? mm (method-sig meth))
                   mm
                   (do
                     (emit-forwarding-method (.getName meth) (.getParameterTypes meth) (.getReturnType meth) false
-                                            emit-unsupported)
+                                            (if (.isDefault meth)
+                                              (partial emit-super-call (.getDeclaringClass meth))
+                                              emit-unsupported))
                     (assoc mm (method-sig meth) meth))))
-              mm (mapcat #(.getMethods ^Class %) interfaces))
+              mm (mapcat instance-methods interfaces))
                                         ;extra methods
        (doseq [[mname pclasses rclass :as msig] methods]
          (emit-forwarding-method mname pclasses rclass (:static (meta msig))
@@ -646,14 +664,15 @@
   fully-qualified class name given as a string or symbol
   (such as 'java.lang.String)"
   [c]
-  (if (or (instance? Class c) (prim->class c))
-    (Type/getType (the-class c))
-    (let [strx (str c)]
-      (Type/getObjectType 
-       (.replace (if (some #{\. \[} strx)
-                   strx
-                   (str "java.lang." strx)) 
-                 "." "/")))))
+  (let [c (or (and (symbol? c) (clojure.lang.Compiler$HostExpr/maybeArrayClass c)) c)]
+    (if (or (instance? Class c) (prim->class c))
+      (Type/getType (the-class c))
+      (let [strx (str c)]
+        (Type/getObjectType
+         (.replace (if (some #{\. \[} strx)
+                     strx
+                     (str "java.lang." strx))
+                   "." "/"))))))
 
 (defn- generate-interface
   [{:keys [name extends methods]}]
@@ -662,9 +681,9 @@
       (IllegalArgumentException. "Interface methods must not contain '-'")))
   (let [iname (.replace (str name) "." "/")
         cv (clojure.lang.Compiler/classWriter)]
-    (. cv visit Opcodes/V1_8 (+ Opcodes/ACC_PUBLIC 
-                                Opcodes/ACC_ABSTRACT
-                                Opcodes/ACC_INTERFACE)
+    (. cv visit Compiler/JVM_BYTECODE_VERSION (+ Opcodes/ACC_PUBLIC
+                                                 Opcodes/ACC_ABSTRACT
+                                                 Opcodes/ACC_INTERFACE)
        iname nil "java/lang/Object"
        (when (seq extends)
          (into-array (map #(.getInternalName (asm-type %)) extends))))

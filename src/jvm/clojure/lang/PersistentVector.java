@@ -17,9 +17,13 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Spliterator;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
-public class PersistentVector extends APersistentVector implements IObj, IEditableCollection, IReduce, IKVReduce{
+public class PersistentVector extends APersistentVector implements IObj, IEditableCollection, IReduce, IKVReduce, IDrop{
+
+private static final long serialVersionUID = -7896022351281214157L;
 
 public static class Node implements Serializable {
 	transient public final AtomicReference<Thread> edit;
@@ -316,6 +320,77 @@ Iterator rangedIterator(final int start, final int end){
 
 public Iterator iterator(){return rangedIterator(0,count());}
 
+@Override
+Spliterator rangedSpliterator(final int start, final int end){
+	return new Spliterator(){
+		int i = start;
+		int base = i - (i%32);
+		Object[] array = (start < count())?arrayFor(i):null;
+
+		@Override
+		public int characteristics() {
+			return Spliterator.IMMUTABLE |   // persistent
+					Spliterator.ORDERED |    // know order
+					Spliterator.SIZED |      // know size
+					Spliterator.SUBSIZED;    // know size after split
+		}
+
+		@Override
+		public long estimateSize() {
+			return end-i;
+		}
+
+		@Override
+		public long getExactSizeIfKnown() {
+			return end-i;
+		}
+
+		@Override
+		public boolean tryAdvance(Consumer action) {
+			if(i < end) {
+				if(i-base == 32){
+					array = arrayFor(i);
+					base += 32;
+				}
+				action.accept(array[i++ & 0x01f]);
+				return true;
+			}
+			return false;
+		}
+
+		@Override
+		public Spliterator trySplit() {
+			int lo = i;
+			int mid = (lo + end) >>> 1; // avoid overflow
+			if(lo >= mid) {
+				return null;
+			} else {
+				i = mid;
+				return rangedSpliterator(lo, mid);
+			}
+		}
+
+		@Override
+		public void forEachRemaining(Consumer action) {
+			int x=i;
+			while(x<end){
+				Object[] array = arrayFor(x);
+				int remaining = end-x;
+				int offset = x & 0x01f;
+				int limit = Math.min(array.length, offset + remaining);
+				for(int j=offset; j<limit; ++j){
+					action.accept(array[j]);
+				}
+				x+= (limit-offset);
+			}
+			i=end; // done
+			this.array=null;
+		}
+	};
+}
+
+public Spliterator spliterator(){return rangedSpliterator(0,count());}
+
 public Object reduce(IFn f){
     Object init;
     if (cnt > 0)
@@ -363,7 +438,16 @@ public Object kvreduce(IFn f, Object init){
     return init;
 }
 
-static public final class ChunkedSeq extends ASeq implements IChunkedSeq,Counted{
+public Sequential drop(int n) {
+	if(n < cnt) {
+		int offset = n%32;
+		return new ChunkedSeq(this, this.arrayFor(n), n-offset, offset);
+	} else {
+		return null;
+	}
+}
+
+static public final class ChunkedSeq extends ASeq implements IChunkedSeq,Counted,IReduce,IDrop{
 
 	public final PersistentVector vec;
 	final Object[] node;
@@ -427,6 +511,72 @@ static public final class ChunkedSeq extends ASeq implements IChunkedSeq,Counted
 
 	public int count(){
 		return vec.cnt - (i + offset);
+	}
+
+	public Iterator iterator() {
+		return vec.rangedIterator(i +offset, vec.cnt);
+	}
+
+	public Object reduce(IFn f) {
+		Object acc;
+		if (i +offset < vec.cnt)
+			acc = node[offset];
+		else
+			return f.invoke();
+
+		for(int j=offset+1;j<node.length;++j){
+			acc = f.invoke(acc,node[j]);
+			if(RT.isReduced(acc))
+				return ((IDeref)acc).deref();
+		}
+
+		int step = 0;
+		for(int ii = i +node.length; ii<vec.cnt; ii+=step){
+			Object[] array = vec.arrayFor(ii);
+			for(int j = 0;j<array.length;++j){
+				acc = f.invoke(acc,array[j]);
+				if(RT.isReduced(acc))
+					return ((IDeref)acc).deref();
+			}
+			step = array.length;
+		}
+		return acc;
+	}
+
+	public Object reduce(IFn f, Object init) {
+		Object acc = init;
+		for(int j=offset;j<node.length;++j){
+			acc = f.invoke(acc,node[j]);
+			if(RT.isReduced(acc))
+				return ((IDeref)acc).deref();
+		}
+
+		int step = 0;
+		for(int ii = i +node.length; ii<vec.cnt; ii+=step){
+			Object[] array = vec.arrayFor(ii);
+			for(int j = 0;j<array.length;++j){
+				acc = f.invoke(acc,array[j]);
+				if(RT.isReduced(acc))
+					return ((IDeref)acc).deref();
+			}
+			step = array.length;
+		}
+		return acc;
+	}
+
+	public Sequential drop(int n) {
+		int o = offset + n;
+		if(o < node.length) { // in current array
+			return new ChunkedSeq(vec, node, i, o);
+		} else {
+			int i = this.i +o;
+			if(i < vec.cnt) { // in vec
+				int newOffset = i%32;
+				return new ChunkedSeq(vec, vec.arrayFor(i), i-newOffset, newOffset);
+			} else {
+				return null;
+			}
+		}
 	}
 }
 
@@ -522,23 +672,25 @@ static final class TransientVector extends AFn implements ITransientVector, ITra
 	volatile int shift;
 	volatile Node root;
 	volatile Object[] tail;
+	private final IPersistentMap _meta;
 
-	TransientVector(int cnt, int shift, Node root, Object[] tail){
+	TransientVector(int cnt, int shift, Node root, Object[] tail, IPersistentMap _meta){
 		this.cnt = cnt;
 		this.shift = shift;
 		this.root = root;
 		this.tail = tail;
+		this._meta = _meta;
 	}
 
 	TransientVector(PersistentVector v){
-		this(v.cnt, v.shift, editableRoot(v.root), editableTail(v.tail));
+		this(v.cnt, v.shift, editableRoot(v.root), editableTail(v.tail),v._meta);
 	}
 
 	public int count(){
 		ensureEditable();
 		return cnt;
 	}
-	
+
 	Node ensureEditable(Node node){
 		if(node.edit == root.edit)
 			return node;
@@ -567,7 +719,7 @@ static final class TransientVector extends AFn implements ITransientVector, ITra
 		root.edit.set(null);
 		Object[] trimmedTail = new Object[cnt-tailoff()];
 		System.arraycopy(tail,0,trimmedTail,0,trimmedTail.length);
-		return new PersistentVector(cnt, shift, root, trimmedTail);
+		return new PersistentVector(_meta, cnt, shift, root, trimmedTail);
 	}
 
 	static Object[] editableTail(Object[] tl){

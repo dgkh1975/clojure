@@ -16,6 +16,19 @@
   [ns]
   (.replace (str ns) \- \_))
 
+(defn- resolve-unqualified-class-tag
+  "Resolves unqualified class tag symbol to fully qualified class tag symbol.
+  Returns all other tags unmodified."
+  [tag]
+  (let [array-tag? '#{ints longs floats doubles chars shorts bytes booleans objects}]
+    (if-let [c (and (instance? clojure.lang.Symbol tag)
+                    (= (.indexOf (.getName ^clojure.lang.Symbol tag) ".") -1)
+                    (not (array-tag? tag))
+                    (let [resolved (resolve tag)]
+                      (when (class? resolved) resolved)))]
+      (symbol (.getName ^Class c))
+      tag)))
+
 ;for now, built on gen-interface
 (defmacro definterface
   "Creates a new Java interface with the given name and method sigs.
@@ -27,7 +40,7 @@
     (^Bar method2 [^Baz b ^Quux q]))"
   {:added "1.2"} ;; Present since 1.2, but made public in 1.5.
   [name & sigs]
-  (let [tag (fn [x] (or (:tag (meta x)) Object))
+  (let [tag (fn [x] (or (resolve-unqualified-class-tag (:tag (meta x))) Object))
         psig (fn [[name [& args]]]
                (vector name (vec (map tag args)) (tag name) (map meta args)))
         cname (with-meta (symbol (str (namespace-munge *ns*) "." name)) (meta name))]
@@ -67,8 +80,9 @@
       (throw (IllegalArgumentException. (apply print-str "Unsupported option(s) -" bad-opts))))
     [interfaces methods opts]))
 
-(defmacro reify 
-  "reify is a macro with the following structure:
+(defmacro reify
+  "reify creates an object implementing a protocol or interface.
+  reify is a macro with the following structure:
 
  (reify options* specs*)
   
@@ -100,18 +114,19 @@
   same arity in an interface you must specify complete hints to
   disambiguate - a missing hint implies Object.
 
-  recur works to method heads The method bodies of reify are lexical
-  closures, and can refer to the surrounding local scope:
+  Method heads are recursion points for recur, as in a fn. The method
+  bodies of reify are lexical closures, and can refer to the surrounding
+  local scope:
   
   (str (let [f \"foo\"] 
-       (reify Object 
-         (toString [this] f))))
+         (reify Object
+           (toString [this] f))))
   == \"foo\"
 
   (seq (let [f \"foo\"] 
-       (reify clojure.lang.Seqable 
-         (seq [this] (seq f)))))
-  == (\\f \\o \\o))
+         (reify clojure.lang.Seqable
+           (seq [this] (seq f)))))
+  == (\\f \\o \\o)
   
   reify always implements clojure.lang.IObj and transfers meta
   data of the form to the created object.
@@ -509,11 +524,11 @@
   (if (.map cache)
     (let [cs (assoc (.map cache) c (clojure.lang.MethodImplCache$Entry. c f))]
       (clojure.lang.MethodImplCache. (.sym cache) (.protocol cache) (.methodk cache) cs))
-    (let [cs (into1 {} (remove (fn [[c e]] (nil? e)) (map vec (partition 2 (.table cache)))))
+    (let [cs (into0 {} (remove (fn [[c e]] (nil? e)) (map vec (partition 2 (.table cache)))))
           cs (assoc cs c (clojure.lang.MethodImplCache$Entry. c f))]
       (if-let [[shift mask] (maybe-min-hash (map hash (keys cs)))]
         (let [table (make-array Object (* 2 (inc mask)))
-              table (reduce1 (fn [^objects t [c e]]
+              table (reduce0 (fn [^objects t [c e]]
                                (let [i (* 2 (int (shift-mask shift mask (hash c))))]
                                  (aset t i c)
                                  (aset t (inc i) e)
@@ -539,7 +554,7 @@
           impl #(get (:impls protocol) %)]
       (or (impl c)
           (and c (or (first (remove nil? (map impl (butlast (super-chain c)))))
-                     (when-let [t (reduce1 pref (filter impl (disj (supers c) Object)))]
+                     (when-let [t (reduce0 pref (filter impl (disj (supers c) Object)))]
                        (impl t))
                      (impl Object)))))))
 
@@ -650,8 +665,12 @@
             keyword? (recur (assoc opts (first sigs) (second sigs)) (nnext sigs))
             [opts sigs]))
         sigs (when sigs
-               (reduce1 (fn [m s]
-                          (let [name-meta (meta (first s))
+               (reduce0 (fn [m s]
+                          (let [disallowed? '#{int long float double char short byte boolean void}
+                                resolve-class-symbol (fn [tag]
+                                                       (when-not (disallowed? tag)
+                                                         (resolve-unqualified-class-tag tag)))
+                                name-meta (update-in (meta (first s)) [:tag] resolve-class-symbol)
                                 mname (with-meta (first s) nil)
                                 [arglists doc]
                                 (loop [as [] rs (rest s)]

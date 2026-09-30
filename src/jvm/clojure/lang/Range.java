@@ -18,6 +18,8 @@ import java.util.*;
  */
 public class Range extends ASeq implements IChunkedSeq, IReduce {
 
+private static final long serialVersionUID = -71973733672395145L;
+
 private static final int CHUNK_SIZE = 32;
 
 // Invariants guarantee this is never an "empty" seq
@@ -99,7 +101,7 @@ public static ISeq create(final Object start, Object end, Object step) {
 public Obj withMeta(IPersistentMap meta){
 	if(meta == _meta)
 		return this;
-	return new Range(meta, end, start, step, boundsCheck, _chunk, _chunkNext);
+	return new Range(meta, start, end, step, boundsCheck, _chunk, _chunkNext);
 }
 
 public Object first(){

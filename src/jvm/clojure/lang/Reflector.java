@@ -19,6 +19,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Proxy;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -94,12 +95,19 @@ private static Method toAccessibleSuperMethod(Method m, Object target) {
 }
 
 public static Object invokeInstanceMethod(Object target, String methodName, Object[] args) {
-	Class c = target.getClass();
+	return invokeInstanceMethodOfClass(target, target.getClass(), methodName, args);
+}
+
+public static Object invokeInstanceMethodOfClass(Object target, Class c, String methodName, Object[] args) {
 	List methods = getMethods(c, args.length, methodName, false).stream()
-					.map(method -> toAccessibleSuperMethod(method, target))
-					.filter(method -> (method != null))
-					.collect(Collectors.toList());
-	return invokeMatchingMethod(methodName, methods, target, args);
+			.map(method -> toAccessibleSuperMethod(method, target))
+			.filter(Objects::nonNull)
+			.collect(Collectors.toList());
+	return invokeMatchingMethod(methodName, methods, c, target, args);
+}
+
+public static Object invokeInstanceMethodOfClass(Object target, String className, String methodName, Object[] args) {
+	return invokeInstanceMethodOfClass(target, RT.classForName(className), methodName, args);
 }
 
 private static Throwable getCauseOrElse(Exception e) {
@@ -114,57 +122,78 @@ private static RuntimeException throwCauseOrElseException(Exception e) {
 	throw Util.sneakyThrow(e);
 }
 
-private static String noMethodReport(String methodName, Object target, Object[] args){
+private static String noMethodReport(String methodName, Class contextClass, Object[] args){
 	 return "No matching method " + methodName + " found taking " + args.length + " args"
-			+ (target==null?"":" for " + target.getClass());
+			+ (contextClass != null ? " for " + contextClass : "");
 }
-static Object invokeMatchingMethod(String methodName, List methods, Object target, Object[] args)
+
+private static Method matchMethod(List methods, Object[] args) {
+	Method foundm = null;
+	for(Iterator i = methods.iterator(); i.hasNext();) {
+		Method m = (Method) i.next();
+		Class[] params = m.getParameterTypes();
+		if(isCongruent(params, args) && (foundm == null || Compiler.subsumes(params, foundm.getParameterTypes())))
+			foundm = m;
+	}
+	return foundm;
+}
+
+private static Object[] widenBoxedArgs(Object[] args) {
+	Object[] widenedArgs = new Object[args.length];
+	for(int i=0; i<args.length; i++) {
+		if(args[i] != null) {
+			Class valClass = args[i].getClass();
+			if(valClass == Integer.class || valClass == Short.class || valClass == Byte.class) {
+				widenedArgs[i] = ((Number)args[i]).longValue();
+			} else if(valClass == Float.class) {
+				widenedArgs[i] = ((Number)args[i]).doubleValue();
+			} else {
+				widenedArgs[i] = args[i];
+			}
+		}
+	}
+	return widenedArgs;
+}
+
+static Object invokeMatchingMethod(String methodName, List methods, Object target, Object[] args){
+	return invokeMatchingMethod(methodName, methods, target != null ? target.getClass() : null, target, args);
+}
+
+static Object invokeMatchingMethod(String methodName, List methods, Class contextClass, Object target, Object[] args)
 		{
 	Method m = null;
-	Object[] boxedArgs = null;
 	if(methods.isEmpty())
 		{
-		throw new IllegalArgumentException(noMethodReport(methodName,target,args));
+		throw new IllegalArgumentException(noMethodReport(methodName,contextClass,args));
 		}
 	else if(methods.size() == 1)
 		{
 		m = (Method) methods.get(0);
-		boxedArgs = boxArgs(m.getParameterTypes(), args);
 		}
 	else //overloaded w/same arity
 		{
-		Method foundm = null;
-		for(Iterator i = methods.iterator(); i.hasNext();)
+		m = matchMethod(methods, args);
+		if(m == null) // widen boxed args and re-try matchMethod
 			{
-			m = (Method) i.next();
-
-			Class[] params = m.getParameterTypes();
-			if(isCongruent(params, args))
-				{
-				if(foundm == null || Compiler.subsumes(params, foundm.getParameterTypes()))
-					{
-					foundm = m;
-					boxedArgs = boxArgs(params, args);
-					}
-				}
+			args = widenBoxedArgs(args);
+			m = matchMethod(methods, args);
 			}
-		m = foundm;
 		}
 	if(m == null)
-		throw new IllegalArgumentException(noMethodReport(methodName,target,args));
+		throw new IllegalArgumentException(noMethodReport(methodName,contextClass,args));
 
 	if(!Modifier.isPublic(m.getDeclaringClass().getModifiers()) || !canAccess(m, target))
 		{
 		//public method of non-public class, try to find it in hierarchy
 		Method oldm = m;
-		m = getAsMethodOfAccessibleBase(target.getClass(), m, target);
+		m = getAsMethodOfAccessibleBase(contextClass, m, target);
 		if(m == null)
 			throw new IllegalArgumentException("Can't call public method of non-public class: " +
 			                                    oldm.toString());
 		}
 	try
 		{
-		return prepRet(m.getReturnType(), m.invoke(target, boxedArgs));
+		return prepRet(m.getReturnType(), m.invoke(target, boxArgs(m.getParameterTypes(), args)));
 		}
 	catch(Exception e)
 		{
@@ -505,18 +534,10 @@ static public List<Method> getMethods(Class c, int arity, String name, boolean g
 		   && Modifier.isStatic(method.getModifiers()) == getStatics
 		   && method.getParameterTypes().length == arity)
 			{
-			try
-				{
-				if(method.isBridge()
-				   && c.getMethod(method.getName(), method.getParameterTypes())
-						.equals(method))
+				if(method.isBridge())
 					bridgeMethods.add(method);
 				else
 					methods.add(method);
-				}
-			catch(NoSuchMethodException e)
-				{
-				}
 			}
 //			   && (!method.isBridge()
 //			       || (c == StringBuilder.class &&
@@ -546,9 +567,32 @@ static public List<Method> getMethods(Class c, int arity, String name, boolean g
 	return methods;
 }
 
+// Return type coercions match coercions in FnInvokers for compiled invokers
+private static Object coerceAdapterReturn(Object ret, Class targetType) {
+	if(targetType.isPrimitive()) {
+		switch (targetType.getName()) {
+			case "boolean": return RT.booleanCast(ret);
+			case "long":    return RT.longCast(ret);
+			case "double":  return RT.doubleCast(ret);
+			case "int":     return RT.intCast(ret);
+			case "short":   return RT.shortCast(ret);
+			case "byte":    return RT.byteCast(ret);
+			case "float":   return RT.floatCast(ret);
+		}
+	}
+	return ret;
+}
 
 static Object boxArg(Class paramType, Object arg){
-	if(!paramType.isPrimitive())
+	if(arg instanceof IFn && Compiler.FISupport.maybeFIMethod(paramType) != null && !(paramType.isInstance(arg)))
+		// Adapt IFn obj to targetType using dynamic proxy
+		return Proxy.newProxyInstance(RT.baseLoader(),
+				new Class[]{paramType},
+				(proxy, method, methodArgs) -> {
+					Object ret = ((IFn) arg).applyTo(RT.seq(methodArgs));
+					return coerceAdapterReturn(ret, method.getReturnType());
+				});
+	else if(!paramType.isPrimitive())
 		return paramType.cast(arg);
 	else if(paramType == boolean.class)
 		return Boolean.class.cast(arg);
@@ -591,6 +635,8 @@ static public boolean paramArgTypeMatch(Class paramType, Class argType){
 	if(argType == null)
 		return !paramType.isPrimitive();
 	if(paramType == argType || paramType.isAssignableFrom(argType))
+		return true;
+	if(Compiler.FISupport.maybeFIMethod(paramType) != null && IFn.class.isAssignableFrom(argType))
 		return true;
 	if(paramType == int.class)
 		return argType == Integer.class
@@ -651,4 +697,5 @@ public static Object prepRet(Class c, Object x){
 //			return Double.valueOf(((Float) x).doubleValue());
 	return x;
 }
+
 }

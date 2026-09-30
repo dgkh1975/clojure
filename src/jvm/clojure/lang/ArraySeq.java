@@ -15,6 +15,9 @@ package clojure.lang;
 import java.lang.reflect.Array;
 
 public class ArraySeq extends ASeq implements IndexedSeq, IReduce{
+
+private static final long serialVersionUID = -9069152683729302290L;
+
 public final Object[] array;
 final int i;
 //ISeq _rest;
@@ -140,6 +143,13 @@ public int lastIndexOf(Object o) {
 		}
 	}
 	return -1;
+}
+
+public Object[] toArray(){
+	int sz = this.array.length - this.i;
+	Object[] ret = new Object[sz];
+	System.arraycopy(this.array, i, ret, 0, sz);
+	return ret;
 }
 
 //////////////////////////////////// specialized primitive versions ///////////////////////////////

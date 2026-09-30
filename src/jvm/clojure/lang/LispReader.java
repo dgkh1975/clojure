@@ -64,6 +64,7 @@ static IFn[] macros = new IFn[256];
 static IFn[] dispatchMacros = new IFn[256];
 //static Pattern symbolPat = Pattern.compile("[:]?([\\D&&[^:/]][^:/]*/)?[\\D&&[^:/]][^:/]*");
 static Pattern symbolPat = Pattern.compile("[:]?([\\D&&[^/]].*/)?(/|[\\D&&[^/]][^/]*)");
+static Pattern arraySymbolPat = Pattern.compile("([\\D&&[^/:]].*)/([1-9])");
 //static Pattern varPat = Pattern.compile("([\\D&&[^:\\.]][^:\\.]*):([\\D&&[^:\\.]][^:\\.]*)");
 //static Pattern intPat = Pattern.compile("[-+]?[0-9]+\\.?");
 static Pattern intPat =
@@ -71,6 +72,7 @@ static Pattern intPat =
 				"([-+]?)(?:(0)|([1-9][0-9]*)|0[xX]([0-9A-Fa-f]+)|0([0-7]+)|([1-9][0-9]?)[rR]([0-9A-Za-z]+)|0[0-9]+)(N)?");
 static Pattern ratioPat = Pattern.compile("([-+]?[0-9]+)/([0-9]+)");
 static Pattern floatPat = Pattern.compile("([-+]?[0-9]+(\\.[0-9]*)?([eE][-+]?[0-9]+)?)(M)?");
+static Pattern argPat = Pattern.compile("%(?:(&)|([1-9][0-9]*))?");
 //static Pattern accessorPat = Pattern.compile("\\.[a-zA-Z_]\\w*");
 //static Pattern instanceMemberPat = Pattern.compile("\\.([a-zA-Z_][\\w\\.]*)\\.([a-zA-Z_]\\w*)");
 //static Pattern staticMemberPat = Pattern.compile("([a-zA-Z_][\\w\\.]*)\\.([a-zA-Z_]\\w*)");
@@ -460,6 +462,12 @@ private static Object matchSymbol(String s, Resolver resolver){
 			return Keyword.intern(sym);
 		return sym;
 		}
+	else
+		{
+		Matcher am = arraySymbolPat.matcher(s);
+		if(am.matches())
+			return Symbol.intern(am.group(1), am.group(2));
+		}
 	return null;
 }
 
@@ -837,7 +845,7 @@ public static class DispatchReader extends AFn{
 		int ch = read1((Reader) reader);
 		if(ch == -1)
 			throw Util.runtimeException("EOF while reading character");
-		IFn fn = dispatchMacros[ch];
+		IFn fn = ch < dispatchMacros.length ? dispatchMacros[ch] : null;
 
 		// Try the ctor reader first
 		if(fn == null) {
@@ -920,23 +928,16 @@ static Symbol registerArg(int n){
 static class ArgReader extends AFn{
 	public Object invoke(Object reader, Object pct, Object opts, Object pendingForms) {
 		PushbackReader r = (PushbackReader) reader;
+		String token = readToken(r, '%');
 		if(ARG_ENV.deref() == null)
-			{
-			return interpretToken(readToken(r, '%'), null);
-			}
-		int ch = read1(r);
-		unread(r, ch);
-		//% alone is first arg
-		if(ch == -1 || isWhitespace(ch) || isTerminatingMacro(ch))
-			{
-			return registerArg(1);
-			}
-		Object n = read(r, true, null, true, opts, ensurePending(pendingForms));
-		if(n.equals(Compiler._AMP_))
-			return registerArg(-1);
-		if(!(n instanceof Number))
+			return interpretToken(token, null);
+
+		Matcher m = argPat.matcher(token);
+		if (!m.matches())
 			throw new IllegalStateException("arg literal must be %, %& or %integer");
-		return registerArg(((Number) n).intValue());
+		if (m.group(1) != null) // %&
+			return registerArg(-1);
+		return registerArg(m.group(2) == null ? 1 : Integer.parseInt(m.group(2)));
 	}
 }
 
@@ -956,8 +957,10 @@ public static class MetaReader extends AFn{
 			meta = RT.map(RT.TAG_KEY, meta);
 		else if (meta instanceof Keyword)
 			meta = RT.map(meta, RT.T);
+		else if (meta instanceof IPersistentVector)
+			meta = RT.map(RT.PARAM_TAGS_KEY, meta);
 		else if(!(meta instanceof IPersistentMap))
-			throw new IllegalArgumentException("Metadata must be Symbol,Keyword,String or Map");
+			throw new IllegalArgumentException("Metadata must be Symbol,Keyword,String,Vector or Map");
 
 		Object o = read(r, true, null, true, opts, pendingForms);
 		if(o instanceof IMeta)

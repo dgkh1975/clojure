@@ -13,9 +13,10 @@
             [clojure.edn :as edn]
             [clojure.main :as m])
   (:import
-   [clojure.lang LineNumberingPushbackReader]
+   [clojure.lang LineNumberingPushbackReader DynamicClassLoader]
    [java.net InetAddress Socket ServerSocket SocketException]
    [java.io Reader Writer PrintWriter BufferedWriter BufferedReader InputStreamReader OutputStreamWriter]
+   [java.util Properties]
    [java.util.concurrent.locks ReentrantLock]))
 
 (set! *warn-on-reflection* true)
@@ -51,7 +52,7 @@
   "Validate server config options"
   [{:keys [name port accept] :as opts}]
   (doseq [prop [:name :port :accept]] (required opts prop))
-  (when (or (not (integer? port)) (not (< -1 port 65535)))
+  (when (or (not (integer? port)) (not (<= 0 port 65535)))
     (throw (ex-info (str "Invalid socket server port: " port) opts))))
 
 (defn- accept-connection
@@ -145,14 +146,16 @@
 
 (defn- parse-props
   "Parse clojure.server.* from properties to produce a map of server configs."
-  [props]
+  [^Properties props]
   (reduce
-    (fn [acc [^String k ^String v]]
-      (let [[k1 k2 k3] (str/split k #"\.")]
-        (if (and (= k1 "clojure") (= k2 "server"))
-          (conj acc (merge {:name k3} (edn/read-string v)))
-          acc)))
-    [] props))
+   (fn [acc ^String k]
+     (let [[k1 k2 k3] (str/split k #"\.")]
+       (if (and (= k1 "clojure") (= k2 "server"))
+         (let [v (get props k)]
+           (conj acc (merge {:name k3} (edn/read-string v))))
+         acc)))
+   []
+   (.stringPropertyNames props)))
 
 (defn start-servers
   "Start all servers specified in the system properties."
@@ -215,18 +218,21 @@
   Alpha, subject to change."
   {:added "1.10"}
   [in-reader out-fn & {:keys [stdin]}]
+  (let [cl (.getContextClassLoader (Thread/currentThread))]
+    (.setContextClassLoader (Thread/currentThread) (DynamicClassLoader. cl)))
   (let [EOF (Object.)
         tapfn #(out-fn {:tag :tap :val %1})]
     (m/with-bindings
       (in-ns 'user)
-      (binding [*in* (or stdin in-reader)
-                *out* (PrintWriter-on #(out-fn {:tag :out :val %1}) nil)
-                *err* (PrintWriter-on #(out-fn {:tag :err :val %1}) nil)]
+      (binding [*repl* true
+                *in* (or stdin in-reader)
+                *out* (PrintWriter-on #(out-fn {:tag :out :val %1}) nil true)
+                *err* (PrintWriter-on #(out-fn {:tag :err :val %1}) nil true)]
         (try
           (add-tap tapfn)
           (loop []
             (when (try
-                    (let [[form s] (read+string in-reader false EOF)]
+                    (let [[form s] (read+string {:eof EOF :read-cond :allow} in-reader)]
                       (try
                         (when-not (identical? form EOF)
                           (let [start (System/nanoTime)
@@ -288,7 +294,7 @@
                         (try
                           (assoc m :val (valf (:val m)))
                           (catch Throwable ex
-                            (assoc m :val (ex->data ex :print-eval-result)
+                            (assoc m :val (valf (ex->data ex :print-eval-result))
                                      :exception true)))
                         m))))))))
 

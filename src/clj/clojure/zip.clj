@@ -18,7 +18,7 @@
 (defn zipper
   "Creates a new zipper structure. 
 
-  branch? is a fn that, given a node, returns true if can have
+  branch? is a fn that, given a node, returns true if it can have
   children, even if it currently doesn't.
 
   children is a fn that, given a branch node, returns a seq of its
@@ -239,8 +239,8 @@
        (and (branch? loc) (down loc))
        (right loc)
        (loop [p loc]
-         (if (up p)
-           (or (right (up p)) (recur (up p)))
+         (if-let [uloc (up p)]
+           (or (right uloc) (recur uloc))
            [(node p) :end])))))
 
 (defn prev

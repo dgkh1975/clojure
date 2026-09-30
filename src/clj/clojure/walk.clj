@@ -41,10 +41,10 @@ the sorting function."}
   {:added "1.1"}
   [inner outer form]
   (cond
-   (list? form) (outer (apply list (map inner form)))
+   (list? form) (outer (with-meta (apply list (map inner form)) (meta form)))
    (instance? clojure.lang.IMapEntry form)
    (outer (clojure.lang.MapEntry/create (inner (key form)) (inner (val form))))
-   (seq? form) (outer (doall (map inner form)))
+   (seq? form) (outer (with-meta (doall (map inner form)) (meta form)))
    (instance? clojure.lang.IRecord form)
      (outer (reduce (fn [r x] (conj r (inner x))) form form))
    (coll? form) (outer (into (empty form) (map inner form)))
@@ -91,21 +91,25 @@ the sorting function."}
   [form]
   (prewalk (fn [x] (print "Walked: ") (prn x) x) form))
 
+(defn transform-keys
+  "Recursively transform all map keys using f as a transformation function."
+  {:added "1.13"}
+  [m f]
+  (let [entry-f (fn [[k v]] [(f k) v])]
+    ;; only apply to maps
+    (postwalk (fn [x] (if (map? x) (into {} (map entry-f x)) x)) m)))
+
 (defn keywordize-keys
   "Recursively transforms all map keys from strings to keywords."
   {:added "1.1"}
   [m]
-  (let [f (fn [[k v]] (if (string? k) [(keyword k) v] [k v]))]
-    ;; only apply to maps
-    (postwalk (fn [x] (if (map? x) (into {} (map f x)) x)) m)))
+  (transform-keys m (fn [k] (if (string? k) (keyword k) k))))
 
 (defn stringify-keys
   "Recursively transforms all map keys from keywords to strings."
   {:added "1.1"}
   [m]
-  (let [f (fn [[k v]] (if (keyword? k) [(name k) v] [k v]))]
-    ;; only apply to maps
-    (postwalk (fn [x] (if (map? x) (into {} (map f x)) x)) m)))
+  (transform-keys m (fn [k] (if (keyword? k) (name k) k))))
 
 (defn prewalk-replace
   "Recursively transforms form by replacing keys in smap with their

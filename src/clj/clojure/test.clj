@@ -229,7 +229,9 @@
    \"with-test-out\" macro, which rebinds *out* to the current value
    of *test-out*.
 
-   For additional event types, see the examples in the code.
+   The event types are:
+   :default :pass :fail :error :summary :begin-test-ns :end-test-ns
+   :begin-test-var :end-test-var
 "}
   clojure.test
   (:require [clojure.template :as temp]
@@ -324,10 +326,10 @@
 (defmulti
   ^{:doc "Generic reporting function, may be overridden to plug in
    different report formats (e.g., TAP, JUnit).  Assertions such as
-   'is' call 'report' to indicate results.  The argument given to
-   'report' will be a map with a :type key.  See the documentation at
-   the top of test_is.clj for more information on the types of
-   arguments for 'report'."
+   'is' call 'report' to indicate results. The argument given to
+   'report' will be a map with a :type key. See (doc clojure.test)
+   docs under 'EXTENDING TEST-IS' for types of arguments for
+   'report'."
      :dynamic true
      :added "1.1"}
   report :type)
@@ -447,7 +449,7 @@
            result# (apply ~pred values#)]
        (if result#
          (do-report {:type :pass, :message ~msg,
-                  :expected '~form, :actual (cons ~pred values#)})
+                  :expected '~form, :actual (cons '~pred values#)})
          (do-report {:type :fail, :message ~msg,
                   :expected '~form, :actual (list '~'not (cons '~pred values#))}))
        result#)))
@@ -721,8 +723,8 @@
       (do-report {:type :end-test-var, :var v}))))
 
 (defn test-vars
-  "Groups vars by their namespace and runs test-vars on them with
-   appropriate fixtures applied."
+  "Groups vars by their namespace and runs test-var on them with
+  appropriate fixtures applied."
   {:added "1.6"}
   [vars]
   (doseq [[ns vars] (group-by (comp :ns meta) vars)]
@@ -793,3 +795,38 @@
   [summary]
   (and (zero? (:fail summary 0))
        (zero? (:error summary 0))))
+
+(defn run-test-var
+  "Runs the tests for a single Var, with fixtures executed around the test, and summary output after."
+  {:added "1.11"}
+  [v]
+  (binding [*report-counters* (ref *initial-report-counters*)]
+    (let [ns-obj (-> v meta :ns)
+          summary (do
+                    (do-report {:type :begin-test-ns
+                                :ns   ns-obj})
+                    (test-vars [v])
+                    (do-report {:type :end-test-ns
+                                :ns   ns-obj})
+                    (assoc @*report-counters* :type :summary))]
+      (do-report summary)
+      summary)))
+
+(defmacro run-test
+  "Runs a single test.
+
+  Because the intent is to run a single test, there is no check for the namespace test-ns-hook."
+  {:added "1.11"}
+  [test-symbol]
+  (let [test-var (resolve test-symbol)]
+    (cond
+      (nil? test-var)
+      (binding [*out* *err*]
+        (println "Unable to resolve" test-symbol "to a test function."))
+
+      (not (-> test-var meta :test))
+      (binding [*out* *err*]
+        (println test-symbol "is not a test."))
+
+      :else
+      `(run-test-var ~test-var))))

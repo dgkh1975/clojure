@@ -10,14 +10,17 @@
       :author "Stuart Halloway, Daniel Solano Gómez"}
   clojure.test-clojure.genclass
   (:use clojure.test clojure.test-helper)
-  (:require clojure.test_clojure.genclass.examples)
+  (:require clojure.test_clojure.genclass.examples
+            [clojure.set :as set])
   (:import [clojure.test_clojure.genclass.examples
             ExampleClass
             ExampleAnnotationClass
+            InterfaceDefaultTest
             ProtectedFinalTester
             ArrayDefInterface
-            ArrayGenInterface]
-
+            ArrayGenInterface
+            ImportedTypeHintInterface]
+           [compilation JDK8InterfaceMethods]
            [java.lang.annotation ElementType
                                  Retention
                                  RetentionPolicy
@@ -116,7 +119,11 @@
                "returnsLongArray"    :longs
                "returnsFloatArray"   :floats
                "returnsDoubleArray"  :doubles
-               "returnsBooleanArray" :booleans))))
+               "returnsBooleanArray" :booleans)))
+      (testing "imported class type hints"
+        (let [method-with-name #(method-with-name % (.getMethods ImportedTypeHintInterface))]
+          (is (= java.util.Map (return-type (method-with-name "returnsImportedType"))))
+          (is (= java.util.Map (parameter-type (method-with-name "takesImportedType")))))))
     (testing "gen-interface"
       (let [method-with-name #(method-with-name % (.getMethods ArrayGenInterface))]
         (testing "sugar primitive array hints"
@@ -149,3 +156,31 @@
                         (visitSource [source debug] (.append sourceFile source)))]
     (.accept classReader sourceVisitor 0)
     (is (= "examples.clj" (str sourceFile)))))
+
+(deftest array-descriptors->class
+  (are [descr c] (= (#'clojure.core/the-class descr) c)
+    "[Ljava.util.UUID;" java.util.UUID/1
+    'String java.lang.String
+    'String/1 java.lang.String/1
+    'java.util.UUID java.util.UUID
+    'java.util.UUID/2 java.util.UUID/2
+    'int/1 int/1
+    'boolean/9 boolean/9))
+
+
+(import '[java.lang.reflect Method Modifier])
+
+(deftest interface-methods
+  (let [obj (InterfaceDefaultTest.)]
+    (is (= "bar impl" (JDK8InterfaceMethods/.bar obj)))
+    (is (= "default impl" (JDK8InterfaceMethods/.foo obj)))
+    ;; bind override var target
+    (intern 'clojure.test-clojure.genclass.examples 'intf-foo (constantly "override"))
+    (is (= "override" (JDK8InterfaceMethods/.foo obj))))
+
+  (testing "no forwarder methods for static methods on interfaces"
+    (let [statics (set (->> (.getMethods JDK8InterfaceMethods)
+                            (filter #(Modifier/isStatic (Method/.getModifiers %)))
+                            (map Method/.getName)))
+          forwarders (set (map Method/.getName (.getMethods InterfaceDefaultTest)))]
+      (is (empty? (set/intersection statics forwarders))))))

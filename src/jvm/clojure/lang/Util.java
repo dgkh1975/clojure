@@ -188,8 +188,8 @@ static public boolean isPrimitive(Class c){
 }
 
 static public boolean isInteger(Object x){
-	return x instanceof Integer
-			|| x instanceof Long
+	return x instanceof Long
+			|| x instanceof Integer
 	        || x instanceof BigInt
 			|| x instanceof BigInteger;
 }
@@ -256,5 +256,27 @@ static public Object loadWithClass(String scriptbase, Class<?> loadFrom) throws 
     }
 }
 
+static boolean isPosDigit(String s) {
+	if(s.length() != 1)
+		return false;
+	char ch = s.charAt(0);
+	return ch <= '9' && ch >= '1';
+}
+
+public static Symbol arrayTypeToSymbol(Class c) {
+	int dim = 0;
+	Class componentClass = c;
+
+	while(componentClass.isArray()) {
+		if(++dim > 9)
+			break;
+
+		componentClass = componentClass.getComponentType();
+	}
+	if (dim <= 9 && dim >= 1)
+		return Symbol.intern(componentClass.getName(), Integer.toString(dim));
+	else
+		return Symbol.intern(null, c.getName());
+}
 }
 

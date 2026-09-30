@@ -14,11 +14,15 @@ package clojure.lang;
 
 import java.io.Serializable;
 import java.util.*;
+import java.util.function.Consumer;
 
 public abstract class APersistentVector extends AFn implements IPersistentVector, Iterable,
                                                                List,
                                                                RandomAccess, Comparable,
                                                                Serializable, IHashEq {
+
+private static final long serialVersionUID = 4667575149454420891L;
+
 int _hash;
 int _hasheq;
 
@@ -98,15 +102,18 @@ static boolean doEquiv(IPersistentVector v, Object obj){
 	else if(obj instanceof List)
 		{
 		Collection ma = (Collection) obj;
-		if(ma.size() != v.count())
+
+		if((!(ma instanceof IPersistentCollection) || (ma instanceof Counted)) && (ma.size() != v.count()))
 			return false;
-		for(Iterator i1 = ((List) v).iterator(), i2 = ma.iterator();
-		    i1.hasNext();)
+
+		Iterator i2 = ma.iterator();
+
+		for(Iterator i1 = ((List) v).iterator(); i1.hasNext();)
 			{
-			if(!Util.equiv(i1.next(), i2.next()))
+			if(!i2.hasNext() || !Util.equiv(i1.next(), i2.next()))
 				return false;
 			}
-		return true;
+		return !i2.hasNext();
 		}
 	else
 		{
@@ -268,6 +275,62 @@ Iterator rangedIterator(final int start, final int end){
 			throw new UnsupportedOperationException();
 		}
 	};
+}
+
+Spliterator rangedSpliterator(final int start, final int end) {
+	return new Spliterator() {
+		int i = start;
+
+		@Override
+		public int characteristics() {
+			return Spliterator.IMMUTABLE |   // persistent
+					Spliterator.ORDERED |    // know order
+					Spliterator.SIZED |      // know size
+					Spliterator.SUBSIZED;    // know size after split
+		}
+
+		@Override
+		public long estimateSize() {
+			return end-i;
+		}
+
+		@Override
+		public long getExactSizeIfKnown() {
+			return end-i;
+		}
+
+		@Override
+		public boolean tryAdvance(Consumer action) {
+			if(i < end) {
+				action.accept(nth(i++));
+				return true;
+			}
+			return false;
+		}
+
+		@Override
+		public Spliterator trySplit() {
+			int lo = i;
+			int mid = (lo + end) >>> 1; // avoid overflow
+			if(lo >= mid) {
+				return null;
+			} else {
+				i = mid;
+				return rangedSpliterator(lo, mid);
+			}
+		}
+
+		@Override
+		public void forEachRemaining(Consumer action) {
+			for(int x=i; x<end; x++)
+				action.accept(nth(x));
+			i=end;
+		}
+	};
+}
+
+public Spliterator spliterator(){
+	return rangedSpliterator(0,count());
 }
 
 public List subList(int fromIndex, int toIndex){
@@ -544,7 +607,7 @@ public static class RSeq extends ASeq implements IndexedSeq, Counted{
 	}
 }
 
-public static class SubVector extends APersistentVector implements IObj{
+public static class SubVector extends APersistentVector implements IObj, IKVReduce{
 	public final IPersistentVector v;
 	public final int start;
 	public final int end;
@@ -572,6 +635,21 @@ public static class SubVector extends APersistentVector implements IObj{
 			return ((APersistentVector)v).rangedIterator(start,end);
 		}
 		return super.iterator();
+	}
+
+	@Override
+	public Spliterator spliterator(){
+		return ((APersistentVector)v).rangedSpliterator(start,end);
+	}
+
+	public Object kvreduce(IFn f, Object init){
+		int cnt = count();
+		for (int i=0; i<cnt; i++){
+			init = f.invoke(init, i, v.nth(start + i));
+			if (RT.isReduced(init))
+				return ((IDeref)init).deref();
+		}
+		return init;
 	}
 
 	public Object nth(int i){

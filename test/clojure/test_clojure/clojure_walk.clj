@@ -14,6 +14,14 @@
   (is (= (w/stringify-keys {:a 1, nil {:b 2 :c 3}, :d 4})
          {"a" 1, nil {"b" 2 "c" 3}, "d" 4})))
 
+(deftest t-transform-keys
+  (is (= (w/transform-keys {:a 1, nil {:b 2 :c 3}, :d 4, :e 5}
+                          (fn [k]
+                             (if (keyword? k)
+                               (str (name k) "-" (name k))
+                               k)))
+         {"a-a" 1, nil {"b-b" 2 "c-c" 3}, "d-d" 4, "e-e" 5})))
+
 (deftest t-prewalk-order
   (is (= (let [a (atom [])]
            (w/prewalk (fn [form] (swap! a conj form) form)
@@ -63,3 +71,14 @@
   (let [coll [:html {:a ["b" 1]} ""]
         f (fn [e] (if (and (vector? e) (not (map-entry? e))) (apply list e) e))]
     (is (= (list :html {:a (list "b" 1)} "") (w/postwalk f coll)))))
+
+(defrecord RM [a])
+(deftest retain-meta
+  (let [m {:foo true}]
+    (are [o] (= m (meta (w/postwalk identity (with-meta o m))))
+      '(1 2)
+      [1 2]
+      #{1 2}
+      {1 2}
+      (map inc (range 3))
+      (->RM 1))))

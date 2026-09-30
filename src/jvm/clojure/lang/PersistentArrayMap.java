@@ -10,7 +10,6 @@
 
 package clojure.lang;
 
-import java.io.Serializable;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Map;
@@ -27,10 +26,13 @@ import java.util.NoSuchElementException;
  * <p>null keys and values are ok, but you won't be able to distinguish a null value via valAt - use contains/entryAt</p>
  */
 
-public class PersistentArrayMap extends APersistentMap implements IObj, IEditableCollection, IMapIterable, IKVReduce{
+public class PersistentArrayMap extends APersistentMap implements IObj, IEditableCollection, IMapIterable, IKVReduce, IDrop{
+
+private static final long serialVersionUID = -2074065891090893601L;
 
 final Object[] array;
 static final int HASHTABLE_THRESHOLD = 16;
+static final int KW_HASHTABLE_THRESHOLD = 128;
 
 public static final PersistentArrayMap EMPTY = new PersistentArrayMap();
 private final IPersistentMap _meta;
@@ -64,6 +66,19 @@ IPersistentMap createHT(Object[] init){
 	return PersistentHashMap.create(meta(), init);
 }
 
+static public boolean canBePAM(Object[] init){
+	if(init.length <= HASHTABLE_THRESHOLD)
+		return true;
+	else if(init.length <= KW_HASHTABLE_THRESHOLD) {
+		for(int i = HASHTABLE_THRESHOLD;i < init.length; i+=2){
+			if(!(init[i] instanceof Keyword))
+				return false;
+			}
+		return true;
+		}
+	return false;
+}
+
 static public PersistentArrayMap createWithCheck(Object[] init){
 	for(int i=0;i< init.length;i += 2)
 		{
@@ -76,9 +91,61 @@ static public PersistentArrayMap createWithCheck(Object[] init){
 	return new PersistentArrayMap(init);
 }
 
+/**
+ * <p>This method attempts to find resue the given array as the basis for an array map as quickly as possible.</p>
+ *
+ * <p>If a trailing element exists in the array or it contains duplicate keys then it delegates to the complex path.</p>
+ **/
 static public PersistentArrayMap createAsIfByAssoc(Object[] init){
-	if ((init.length & 1) == 1)
-                throw new IllegalArgumentException(String.format("No value supplied for key: %s", init[init.length-1]));
+	boolean complexPath, hasTrailing;
+	complexPath = hasTrailing = ((init.length & 1) == 1);
+
+	for(int i=0;((i< init.length) && !complexPath);i += 2)
+		{
+		for(int j=0;j<i;j += 2)
+			{
+			if(equalKey(init[i],init[j]))
+				{
+				    complexPath = true;
+				    break;
+				}
+			}
+		}
+
+	if (complexPath) return createAsIfByAssocComplexPath(init, hasTrailing);
+
+	return new PersistentArrayMap(init);
+}
+
+private static Object[] growSeedArray(Object[] seed, IPersistentCollection trailing){
+	ISeq extraKVs = trailing.seq();
+	int seedCount = seed.length - 1;
+	Object[] result = Arrays.copyOf(seed, seedCount + (trailing.count() * 2));
+
+	for(int i=seedCount; extraKVs != null; extraKVs = extraKVs.next(), i+=2)
+		{
+		Map.Entry e = (Entry) extraKVs.first();
+		result[i] = e.getKey();
+		result[i+1] = e.getValue();
+		}
+
+	return result;
+}
+
+/**
+ * <p>This method handles the default case of an array containing alternating key/value pairs.</p>
+ * <p>It will reallocate a smaller init array if duplicate keys are found.</p>
+ *
+ * <p>If a trailing element is found then will attempt to add it to the resulting map as if by conj.</p>
+ * <p>No guarantees about the order of the keys in the trailing element are made.</p>
+ **/
+private static PersistentArrayMap createAsIfByAssocComplexPath(Object[] init, boolean hasTrailing){
+	if(hasTrailing)
+		{
+		IPersistentCollection trailing = PersistentArrayMap.EMPTY.cons(init[init.length-1]);
+		init = growSeedArray(init, trailing);
+		}
+
 	// If this looks like it is doing busy-work, it is because it
 	// is achieving these goals: O(n^2) run time like
 	// createWithCheck(), never modify init arg, and only
@@ -179,7 +246,9 @@ public IPersistentMap assocEx(Object key, Object val) {
 		}
 	else //didn't have key, grow
 		{
-		if(array.length >= HASHTABLE_THRESHOLD)
+		boolean isKW = key instanceof Keyword;
+		if((isKW && array.length >= KW_HASHTABLE_THRESHOLD)
+		   || (!isKW && array.length >= HASHTABLE_THRESHOLD))
 			return createHT(array).assocEx(key, val);
 		newArray = new Object[array.length + 2];
 		if(array.length > 0)
@@ -202,7 +271,9 @@ public IPersistentMap assoc(Object key, Object val){
 		}
 	else //didn't have key, grow
 		{
-		if(array.length >= HASHTABLE_THRESHOLD)
+		boolean isKW = key instanceof Keyword;
+		if((isKW && array.length >= KW_HASHTABLE_THRESHOLD)
+			|| (!isKW && array.length >= HASHTABLE_THRESHOLD))
 			return createHT(array).assoc(key, val);
 		newArray = new Object[array.length + 2];
 		if(array.length > 0)
@@ -296,11 +367,19 @@ public ISeq seq(){
 	return null;
 }
 
+public Sequential drop(int n) {
+	if(array.length > 0) {
+		return ((Seq) seq()).drop(n);
+	} else {
+		return null;
+	}
+}
+
 public IPersistentMap meta(){
 	return _meta;
 }
 
-static class Seq extends ASeq implements Counted{
+static class Seq extends ASeq implements Counted, IReduce, IDrop {
 	final Object[] array;
 	final int i;
 
@@ -329,16 +408,52 @@ static class Seq extends ASeq implements Counted{
 		return (array.length - i) / 2;
 	}
 
+	public Sequential drop(int n) {
+		if(n < count()) {
+			return new Seq(array, i + (2 * n));
+		} else {
+			return null;
+		}
+	}
+
 	public Obj withMeta(IPersistentMap meta){
 		if(meta() == meta)
 			return this;
 		return new Seq(meta, array, i);
 	}
+
+	public Iterator iterator() {
+		return new Iter(array, i-2, APersistentMap.MAKE_ENTRY);
+	}
+
+	public Object reduce(IFn f) {
+		if(i < array.length) {
+			Object acc = MapEntry.create(array[i], array[i+1]);
+			for(int j=i+2;j < array.length;j+=2){
+				acc = f.invoke(acc, MapEntry.create(array[j], array[j+1]));
+				if(RT.isReduced(acc))
+					return ((IDeref)acc).deref();
+			}
+			return acc;
+		} else {
+			return f.invoke();
+		}
+	}
+
+	public Object reduce(IFn f, Object init) {
+		Object acc = init;
+		for(int j=i;j < array.length;j+=2){
+			acc = f.invoke(acc, MapEntry.create(array[j], array[j+1]));
+			if(RT.isReduced(acc))
+				return ((IDeref)acc).deref();
+		}
+		return acc;
+	}
 }
 
 static class Iter implements Iterator{
-    IFn f;
-	Object[] array;
+	final IFn f;
+	final Object[] array;
 	int i;
 
 	//for iterator
@@ -382,22 +497,29 @@ public Object kvreduce(IFn f, Object init){
 }
 
 public ITransientMap asTransient(){
-	return new TransientArrayMap(array);
+	return new TransientArrayMap(_meta, array);
 }
 
 static final class TransientArrayMap extends ATransientMap {
-	volatile int len;
+	int len;
 	final Object[] array;
-	volatile Thread owner;
+	Object owner;
+	private final IPersistentMap _meta;
 
-	public TransientArrayMap(Object[] array){
-		this.owner = Thread.currentThread();
-		this.array = new Object[Math.max(HASHTABLE_THRESHOLD, array.length)];
+	// capacity must be >= array.length
+	private TransientArrayMap(IPersistentMap meta, Object[] array, int capacity){
+		this.array = new Object[capacity];
+		this.owner = this.array;
 		System.arraycopy(array, 0, this.array, 0, array.length);
 		this.len = array.length;
+		this._meta = meta;
+	}
+
+	public TransientArrayMap(IPersistentMap meta, Object[] array){
+		this(meta, array, Math.max(HASHTABLE_THRESHOLD, array.length));
 	}
 	
-	private int indexOf(Object key){
+	private int indexOfObject(Object key){
 		for(int i = 0; i < len; i += 2)
 			{
 			if(equalKey(array[i], key))
@@ -406,7 +528,24 @@ static final class TransientArrayMap extends ATransientMap {
 		return -1;
 	}
 
-	ITransientMap doAssoc(Object key, Object val){
+	private int indexOf(Object key){
+		if(key instanceof Keyword)
+		{
+			for(int i = 0; i < len; i += 2)
+			{
+				if(key == array[i])
+					return i;
+			}
+			return -1;
+		}
+		else
+			return indexOfObject(key);
+	}
+
+	private static final double GROW_FACTOR = 1.5;
+
+	public ITransientMap assoc(Object key, Object val){
+		ensureEditable();
 		int i = indexOf(key);
 		if(i >= 0) //already have key,
 			{
@@ -415,15 +554,29 @@ static final class TransientArrayMap extends ATransientMap {
 			}
 		else //didn't have key, grow
 			{
-			if(len >= array.length)
-				return PersistentHashMap.create(array).asTransient().assoc(key, val);
-			array[len++] = key;
-			array[len++] = val;
+			if(len < array.length) { // have capacity, add
+				array[len] = key;
+				array[len+1] = val;
+				len = len+2;
+			} else if(key instanceof Keyword) {
+				int growCap = (int)Math.ceil(array.length * GROW_FACTOR);
+				growCap += growCap & 1;
+				if (growCap <= KW_HASHTABLE_THRESHOLD)  // can grow TAM
+					return new TransientArrayMap(_meta, array, growCap).assoc(key, val);
+				else// too big, use THM
+					return PersistentHashMap.create(_meta, array).asTransient().assoc(key, val);
+			} else { // not keyword, use THM
+				return PersistentHashMap.create(_meta, array).asTransient().assoc(key, val);
+			}
 			}
 		return this;
 	}
+	ITransientMap doAssoc(Object key, Object val){
+		return assoc(key, val);
+	}
 
-	ITransientMap doWithout(Object key) {
+	public ITransientMap without(Object key) {
+		ensureEditable();
 		int i = indexOf(key);
 		if(i >= 0) //have key, will remove
 			{
@@ -436,24 +589,51 @@ static final class TransientArrayMap extends ATransientMap {
 			}
 		return this;
 	}
+	ITransientMap doWithout(Object key) {
+		return without(key);
+	}
 
-	Object doValAt(Object key, Object notFound) {
+	public Object valAt(Object key, Object notFound) {
+		ensureEditable();
 		int i = indexOf(key);
 		if (i >= 0)
 			return array[i + 1];
 		return notFound;
 	}
+	Object doValAt(Object key, Object notFound) {
+		return valAt(key, notFound);
+	}
 
-	int doCount() {
+	private static final Object NOT_FOUND = new Object();
+	public boolean containsKey(Object key){
+		ensureEditable();
+		return valAt(key, NOT_FOUND) != NOT_FOUND;
+	}
+	public IMapEntry entryAt(Object key){
+		ensureEditable();
+		Object v = valAt(key, NOT_FOUND);
+		if(v != NOT_FOUND)
+			return MapEntry.create(key, v);
+		return null;
+	}
+
+	public int count() {
+		ensureEditable();
 		return len / 2;
 	}
+	int doCount() {
+		return count();
+	}
 	
-	IPersistentMap doPersistent(){
+	public IPersistentMap persistent(){
 		ensureEditable();
 		owner = null;
 		Object[] a = new Object[len];
-		System.arraycopy(array,0,a,0,len);
-		return new PersistentArrayMap(a);
+		System.arraycopy(array,0,a,0,a.length);
+		return new PersistentArrayMap(_meta, a);
+	}
+	IPersistentMap doPersistent(){
+		return persistent();
 	}
 
 	void ensureEditable(){

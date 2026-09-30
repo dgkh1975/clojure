@@ -68,6 +68,8 @@ static interface Ops{
 	public Number dec(Number x);
 	public Number decP(Number x);
 	public Number unchecked_dec(Number x);
+
+	public Number abs(Number x);
 }
 
 static abstract class OpsP implements Ops{
@@ -528,6 +530,10 @@ final static class LongOps implements Ops{
 	public Number divide(Number x, Number y){
 		long n = x.longValue();
 		long val = y.longValue();
+
+		if(n == Long.MIN_VALUE || val == Long.MIN_VALUE)
+			return BIGINT_OPS.divide(x, y);
+
 		long gcd = gcd(n, val);
 		if(gcd == 0)
 			return num(0);
@@ -619,6 +625,10 @@ final static class LongOps implements Ops{
 		long val = x.longValue();
 		return num(Numbers.unchecked_dec(val));
 	}
+
+	public Number abs(Number x){
+		return num(Math.abs(x.longValue()));
+	}
 }
 
 final static class DoubleOps extends OpsP{
@@ -705,6 +715,10 @@ final static class DoubleOps extends OpsP{
 
 	public Number dec(Number x){
 		return Double.valueOf(x.doubleValue() - 1);
+	}
+
+	public Number abs(Number x) {
+		return num(Math.abs(x.doubleValue()));
 	}
 }
 
@@ -837,6 +851,11 @@ final static class RatioOps extends OpsP{
 		return Numbers.add(x, -1);
 	}
 
+	public Number abs(Number x) {
+		Ratio r = (Ratio) x;
+		return new Ratio(r.numerator.abs(), r.denominator);
+	}
+
 }
 
 final static class BigIntOps extends OpsP{
@@ -934,6 +953,10 @@ final static class BigIntOps extends OpsP{
 	public Number dec(Number x){
 		BigInteger bx = toBigInteger(x);
 		return BigInt.fromBigInteger(bx.subtract(BigInteger.ONE));
+	}
+
+	public Number abs(Number x) {
+		return BigInt.fromBigInteger(toBigInteger(x).abs());
 	}
 }
 
@@ -1053,6 +1076,14 @@ final static class BigDecimalOps extends OpsP{
 		return mc == null
 		       ? bx.subtract(BigDecimal.ONE)
 		       : bx.subtract(BigDecimal.ONE, mc);
+	}
+
+	public Number abs(Number x) {
+		MathContext mc = (MathContext) MATH_CONTEXT.deref();
+		BigDecimal bx = (BigDecimal) x;
+		return mc == null
+				? ((BigDecimal) x).abs()
+				: ((BigDecimal) x).abs(mc);
 	}
 }
 
@@ -1888,10 +1919,7 @@ static public double remainder(double x, long y){return remainder(x,(double)y);}
 static public double remainder(long x, double y){return remainder((double)x,y);}
 
 static public long add(long x, long y){
-	long ret = x + y;
-	if ((ret ^ x) < 0 && (ret ^ y) < 0)
-		return throwIntOverflow();
-	return ret;
+	return Math.addExact(x, y);
 }
 
 static public Number addP(long x, long y){
@@ -1902,10 +1930,7 @@ static public Number addP(long x, long y){
 }
 
 static public long minus(long x, long y){
-	long ret = x - y;
-	if (((ret ^ x) < 0 && (ret ^ ~y) < 0))
-		return throwIntOverflow();
-	return ret;
+	return Math.subtractExact(x, y);
 }
 
 static public Number minusP(long x, long y){
@@ -1916,9 +1941,7 @@ static public Number minusP(long x, long y){
 }
 
 static public long minus(long x){
-	if(x == Long.MIN_VALUE)
-		return throwIntOverflow();
-	return -x;
+	return Math.negateExact(x);
 }
 
 static public Number minusP(long x){
@@ -1928,9 +1951,7 @@ static public Number minusP(long x){
 }
 
 static public long inc(long x){
-	if(x == Long.MAX_VALUE)
-		return throwIntOverflow();
-	return x + 1;
+	return Math.incrementExact(x);
 }
 
 static public Number incP(long x){
@@ -1940,9 +1961,7 @@ static public Number incP(long x){
 }
 
 static public long dec(long x){
-	if(x == Long.MIN_VALUE)
-		return throwIntOverflow();
-	return x - 1;
+	return Math.decrementExact(x);
 }
 
 static public Number decP(long x){
@@ -1953,12 +1972,7 @@ static public Number decP(long x){
 
 
 static public long multiply(long x, long y){
-  if (x == Long.MIN_VALUE && y < 0)
-		return throwIntOverflow();
-	long ret = x * y;
-	if (y != 0 && ret/y != x)
-		return throwIntOverflow();
-	return ret;
+	return Math.multiplyExact(x, y);
 }
 
 static public Number multiplyP(long x, long y){
@@ -4068,11 +4082,7 @@ static public Object max(long x, double y){
 
 
 static public long max(long x, long y){
-	if(x > y) {
-		return x;
-	} else {
-		return y;
-	}
+	return Math.max(x, y);
 }
 
 
@@ -4166,11 +4176,7 @@ static public Object min(long x, double y){
 
 
 static public long min(long x, long y){
-	if(x < y) {
-		return x;
-	} else {
-		return y;
-	}
+	return Math.min(x, y);
 }
 
 static public Object min(long x, Object y){
@@ -4219,6 +4225,18 @@ static public Object min(Object x, Object y){
 	} else {
 		return y;
 	}
+}
+
+static public long abs(long x){
+	return Math.abs(x);
+}
+
+static public double abs(double x){
+	return Math.abs(x);
+}
+
+static public Number abs(Object x) {
+	return ops(x).abs((Number)x);
 }
 
 }

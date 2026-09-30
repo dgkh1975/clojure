@@ -181,8 +181,11 @@
       (let [wrapped (fn [x]
                       (try
                        (f x)
-                       (catch IllegalArgumentException e :error)))]
+                       (catch RuntimeException e :error)))]
         (is (= vals (map wrapped inputs)))))))
+
+(deftest test-prim-with-matching-hint
+  (is (= 1 (let [x 1.2] (Math/round ^double x)))))
 
 ;; *** Functions ***
 
@@ -595,7 +598,17 @@ Math/pow overflows to Infinity."
   (is (== (denominator 1/2) 2))
   (is (== (numerator 1/2) 1))
   (is (= (bigint (/ 100000000000000000000 3)) 33333333333333333333))
-  (is (= (long 10000000000000000000/3) 3333333333333333333)))
+  (is (= (long 10000000000000000000/3) 3333333333333333333))
+
+  ;; special cases around Long/MIN_VALUE
+  (is (= (/ 1 Long/MIN_VALUE) -1/9223372036854775808))
+  (is (true? (< (/ 1 Long/MIN_VALUE) 0)))
+  (is (true? (< (* 1 (/ 1 Long/MIN_VALUE)) 0)))
+  (is (= (abs (/ 1 Long/MIN_VALUE)) 1/9223372036854775808))
+  (is (false? (< (abs (/ 1 Long/MIN_VALUE)) 0)))
+  (is (false? (< (* 1 (abs (/ 1 Long/MIN_VALUE))) 0)))
+  (is (= (/ Long/MIN_VALUE -3) 9223372036854775808/3))
+  (is (false? (< (/ Long/MIN_VALUE -3) 0))))
 
 (deftest test-arbitrary-precision-subtract
   (are [x y] (= x y)
@@ -643,6 +656,20 @@ Math/pow overflows to Infinity."
     (is (= java.lang.Long (class (min 1.0 -10 2.0))))
     (is (= java.lang.Long (class (min 1.0 2.0 -10))))
     (is (= java.lang.Double (class (min 1 2 -10.0 3 4 5))))))
+
+(deftest test-abs
+  (are [in ex] (= ex (abs in))
+    -1 1
+    1 1
+    Long/MIN_VALUE Long/MIN_VALUE ;; special case!
+    -1.0 1.0
+    -0.0 0.0
+    ##-Inf ##Inf
+    ##Inf ##Inf
+    -123.456M 123.456M
+    -123N 123N
+    -1/5 1/5)
+  (is (NaN? (abs ##NaN))))
 
 (deftest clj-868
   (testing "min/max: NaN is contagious"

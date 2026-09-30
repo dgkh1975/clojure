@@ -73,7 +73,6 @@
          " (" (.getFileName el) ":" (.getLineNumber el) ")")))
 ;;;;;;;;;;;;;;;;;;; end of redundantly copied from clojure.repl to avoid dep ;;;;;;;;;;;;;;
 
-
 (defmacro with-bindings
   "Executes body in the context of thread-local bindings for several vars
   that often need to be set!: *ns* *warn-on-reflection* *math-context*
@@ -356,7 +355,8 @@
 by default when a new command-line REPL is started."} repl-requires
   '[[clojure.repl :refer (source apropos dir pst doc find-doc)]
     [clojure.java.javadoc :refer (javadoc)]
-    [clojure.pprint :refer (pp pprint)]])
+    [clojure.pprint :refer (pp pprint)]
+    [clojure.repl.deps :refer (add-libs add-lib sync-deps)]])
 
 (defmacro with-read-known
   "Evaluates body with *read-eval* set to a \"known\" value,
@@ -446,24 +446,25 @@ by default when a new command-line REPL is started."} repl-requires
              (caught e)
              (set! *e e))))]
     (with-bindings
-     (try
-      (init)
-      (catch Throwable e
-        (caught e)
-        (set! *e e)))
-     (prompt)
-     (flush)
-     (loop []
-       (when-not 
-       	 (try (identical? (read-eval-print) request-exit)
-	  (catch Throwable e
-	   (caught e)
-	   (set! *e e)
-	   nil))
-         (when (need-prompt)
-           (prompt)
-           (flush))
-         (recur))))))
+     (binding [*repl* true]
+       (try
+        (init)
+        (catch Throwable e
+          (caught e)
+          (set! *e e)))
+       (prompt)
+       (flush)
+       (loop []
+         (when-not
+           (try (identical? (read-eval-print) request-exit)
+	    (catch Throwable e
+	     (caught e)
+	     (set! *e e)
+	     nil))
+           (when (need-prompt)
+             (prompt)
+             (flush))
+           (recur)))))))
 
 (defn load-script
   "Loads Clojure source from a file or resource given its path. Paths
@@ -670,6 +671,6 @@ java -cp clojure.jar clojure.main -i init.clj script.clj args...")
        (catch Throwable t
          (report-error t :target "file")
          (System/exit 1))))
-   (finally 
+   (finally
      (flush))))
 

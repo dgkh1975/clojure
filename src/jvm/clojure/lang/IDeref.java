@@ -12,6 +12,38 @@
 
 package clojure.lang;
 
-public interface IDeref{
+import java.util.function.BooleanSupplier;
+import java.util.function.DoubleSupplier;
+import java.util.function.IntSupplier;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+
+public interface IDeref extends Supplier, BooleanSupplier, IntSupplier, LongSupplier, DoubleSupplier {
 Object deref() ;
+
+@Override
+default Object get() {
+    return deref();
+}
+
+@Override
+default boolean getAsBoolean() {
+    return RT.booleanCast(deref());
+}
+
+@Override
+default int getAsInt() {
+    return RT.intCast(deref());
+}
+
+@Override
+default long getAsLong() {
+    return RT.longCast(deref());
+}
+
+@Override
+default double getAsDouble() {
+    return RT.doubleCast(deref());
+}
+
 }
